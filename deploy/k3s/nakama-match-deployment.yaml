@@ -1,0 +1,135 @@
+# nakama 联机服（StatefulSet）：仅承载对局房间
+# 支持 HPA 按 CPU 扩展、排空更新（drain 后等待房间退出再更新）
+# 主服务更新时，联机服不受影响
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nakama-match
+  namespace: nakama
+spec:
+  replicas: 2
+  serviceName: nakama-match-headless
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  selector:
+    matchLabels:
+      app: nakama-match
+  template:
+    metadata:
+      labels:
+        app: nakama-match
+        nakama: "true"
+    spec:
+      terminationGracePeriodSeconds: 120  # 排空更新：等待房间退出，需 >= shutdown_grace_sec
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: migrate
+          image: 192.168.102.224:30500/nakama-plus:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/nakama/nakama"
+            - "migrate"
+            - "up"
+            - "--database.address"
+            - "postgres:localdb@postgres:5432/nakama"
+      containers:
+        - name: nakama
+          image: 192.168.102.224:30500/nakama-plus:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--name"
+            - "$(POD_NAME)"
+            - "--database.address"
+            - "postgres:localdb@postgres:5432/nakama"
+            - "--config"
+            - "/nakama/conf/config.yml"
+            - "--cluster.gossip_bindaddr"
+            - "$(POD_IP)"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - name: api
+              containerPort: 7350
+            - name: grpc
+              containerPort: 7349
+            - name: console
+              containerPort: 7351
+            - name: gossip
+              containerPort: 7335
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /nakama/conf
+              readOnly: true
+            - name: data
+              mountPath: /nakama/data
+          readinessProbe:
+            exec:
+              command: ["/nakama/nakama", "healthcheck"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/nakama/nakama", "healthcheck"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: nakama-match-config
+        - name: data
+          emptyDir: {}
+---
+# PodDisruptionBudget：滚动更新时至少保留 1 个联机服可用
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nakama-match-pdb
+  namespace: nakama
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nakama-match
+---
+# HPA：CPU 达到 70% 时自动扩展联机服
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nakama-match-hpa
+  namespace: nakama
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: nakama-match
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

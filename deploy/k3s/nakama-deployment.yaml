@@ -1,0 +1,106 @@
+# nakama-plus 多节点部署（StatefulSet）
+# replicas 控制节点数，每个 Pod 名字固定为 nakama-0, nakama-1...
+# 镜像需先构建并推送到 192.168.102.224:30500/nakama-plus:latest
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nakama
+  namespace: nakama
+spec:
+  replicas: 2                    # 节点数，改这里控制几个节点
+  serviceName: nakama-headless   # 对应 Headless Service 名字
+  updateStrategy:                # 滚动更新：每次只更新一个 Pod，按 nakama-1 → nakama-0 顺序
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0               # 0 表示全部参与更新
+  selector:
+    matchLabels:
+      app: nakama
+  template:
+    metadata:
+      labels:
+        app: nakama
+    spec:
+      terminationGracePeriodSeconds: 60  # 给 Pod 60 秒优雅退出，需 >= shutdown_grace_sec
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: migrate
+          image: 192.168.102.224:30500/nakama-plus:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/nakama/nakama"
+            - "migrate"
+            - "up"
+            - "--database.address"
+            - "postgres:localdb@postgres:5432/nakama"
+      containers:
+        - name: nakama
+          image: 192.168.102.224:30500/nakama-plus:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--name"
+            - "$(POD_NAME)"           # 用 Pod 名作为节点名（nakama-0 / nakama-1）
+            - "--database.address"
+            - "postgres:localdb@postgres:5432/nakama"
+            - "--config"
+            - "/nakama/conf/config.yml"
+            - "--cluster.gossip_bindaddr"
+            - "$(POD_IP)"             # gossip 绑定到 Pod 自身 IP
+          env:
+            - name: POD_NAME          # 注入 Pod 名（由 K8s 自动提供）
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP            # 注入 Pod IP（由 K8s 自动提供）
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - name: api
+              containerPort: 7350
+            - name: grpc
+              containerPort: 7349
+            - name: console
+              containerPort: 7351
+            - name: gossip
+              containerPort: 7335     # 节点间通信端口
+          volumeMounts:
+            - name: config
+              mountPath: /nakama/conf
+              readOnly: true
+            - name: data
+              mountPath: /nakama/data
+          readinessProbe:
+            exec:
+              command: ["/nakama/nakama", "healthcheck"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/nakama/nakama", "healthcheck"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: nakama-config
+        - name: data
+          emptyDir: {}
+---
+# PodDisruptionBudget：滚动更新时至少保留 1 个 Pod 可用，避免全量中断
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nakama-pdb
+  namespace: nakama
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nakama

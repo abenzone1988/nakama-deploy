@@ -1,0 +1,72 @@
+# etcd 单节点（供 nakama 集群协调）
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: etcd
+  ports:
+    - name: client
+      port: 2379
+      targetPort: 2379
+    - name: peer
+      port: 2380
+      targetPort: 2380
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etcd
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd
+  template:
+    metadata:
+      labels:
+        app: etcd
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.9
+          imagePullPolicy: IfNotPresent
+          command:
+            - etcd
+            - --name=etcd
+            - --data-dir=/var/lib/etcd
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://etcd.${NAMESPACE}.svc.cluster.local:2379
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --initial-advertise-peer-urls=http://etcd.${NAMESPACE}.svc.cluster.local:2380
+            - --initial-cluster=etcd=http://etcd.${NAMESPACE}.svc.cluster.local:2380
+            - --initial-cluster-state=new
+          ports:
+            - containerPort: 2379
+            - containerPort: 2380
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/etcd
+          readinessProbe:
+            exec:
+              command:
+                - etcdctl
+                - --endpoints=http://127.0.0.1:2379
+                - endpoint
+                - health
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: data
+          emptyDir: {}

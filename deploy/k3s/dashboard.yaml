@@ -1,0 +1,26 @@
+# Dashboard 管理员账号（获取 token 用于登录 Dashboard）
+# Dashboard 本体请通过 setup.sh 中的 kubectl apply -f https://... 安装
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubernetes-dashboard
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: kubernetes-dashboard
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: admin-user
+    namespace: kubernetes-dashboard

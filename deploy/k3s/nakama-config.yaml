@@ -1,0 +1,46 @@
+# nakama-plus 运行配置（ConfigMap）
+# name / gossip_bindaddr 由 nakama-deployment.yaml 里的环境变量覆盖，每个 Pod 自动不同
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nakama-config
+  namespace: nakama
+data:
+  config.yml: |
+    name: nakama-node          # 会被 --name 启动参数覆盖为 Pod 名
+    data_dir: "/nakama/data"
+    shutdown_grace_sec: 30     # 收到 SIGTERM 后等待秒数，用于优雅关闭连接、执行 registerShutdown
+    logger:
+      stdout: true
+      level: "info"
+    database:
+      address:
+        - "postgres:localdb@postgres:5432/nakama"
+      conn_max_lifetime_ms: 0
+      max_open_conns: 0
+      max_idle_conns: 100
+    runtime:
+      path: "/nakama/data/modules"
+      http_key: "http_key"
+    socket:
+      server_key: "sparkgame"
+      port: 7350
+      max_message_size_bytes: 4096
+    session:
+      encryption_key: "defaultencryptionkey"
+      refresh_encryption_key: "defaultrefreshencryptionkey"
+      token_expiry_sec: 7200
+    console:
+      port: 7351
+      username: "admin"
+      password: "password"
+    cluster:
+      # gossip_bindaddr 会被启动参数覆盖为 Pod 自身 IP
+      gossip_bindaddr: "0.0.0.0"
+      gossip_bindport: 7335
+      # join 填 headless service 域名，K8s DNS 会解析到所有 Pod IP
+      join:
+        - "nakama-headless.nakama.svc.cluster.local:7335"
+      etcd:
+        endpoints:
+          - "http://etcd.nakama.svc.cluster.local:2379"  # etcd 在集群内的地址
